@@ -747,7 +747,9 @@ function rBud(){
       <div class="kpi ${tr>tb?'r':''}"><div class="kl">Réel dépensé</div><div class="kv ${tr>tb?'neg':''}">${ff(tr)}</div></div>
       <div class="kpi"><div class="kl">Ratio consommé</div><div class="kv">${tb?Math.round(tr/tb*100)+'%':'—'}</div></div>
     </div>
-    <div class="sec0" style="margin-bottom:14px"><div class="sh_"><div class="stl">Allocation par pôle</div></div>
+    <div class="sec0" style="margin-bottom:14px"><div class="sh_"><div class="stl">Allocation par pôle</div>
+        <button class="btn btn-g" id="pennylane-exp-btn" onclick="syncPennylaneExpenses()" style="font-size:11px;padding:6px 12px">🔄 Sync dépenses Pennylane</button>
+      </div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th class="L" style="min-width:160px">Pôle</th><th style="min-width:120px">Budget (€)</th><th style="min-width:120px">Réel (€)</th><th>Allocation</th><th>Statut</th><th></th></tr></thead>
         <tbody>${pRows}</tbody>
@@ -892,6 +894,76 @@ function mergeIntoDashboard(pennylaneData){
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='s'){e.preventDefault();saveAll();}});
 let asT=null;
 document.addEventListener('input',()=>{clearTimeout(asT);asT=setTimeout(saveAll,4000);});
+
+// ===== SYNCHRONISATION DÉPENSES PENNYLANE (Budgets) =====
+
+// Palette de secours pour les nouveaux pôles créés automatiquement
+const AUTO_POLE_COLORS=['#0EA5E9','#F97316','#84CC16','#EC4899','#14B8A6','#A855F7'];
+
+async function syncPennylaneExpenses(){
+  const btn=document.getElementById('pennylane-exp-btn');
+  const label=btn.textContent;
+  btn.disabled=true;btn.textContent='⏳ Récupération...';
+  try{
+    const res=await fetch('/api/pennylane-expenses');
+    if(!res.ok){
+      const errBody=await res.json().catch(()=>({}));
+      throw new Error(errBody.error||('Erreur API '+res.status));
+    }
+    const data=await res.json();
+    mergeExpensesIntoBudget(data);
+    btn.textContent='✅ '+data.categories.length+' catégories';
+  }catch(err){
+    console.error('Erreur de synchronisation des dépenses Pennylane :',err);
+    btn.textContent='⚠️ Erreur';
+    toast('Erreur de synchronisation des dépenses Pennylane');
+  }finally{
+    btn.disabled=false;
+    setTimeout(()=>{btn.textContent=label;},4500);
+  }
+}
+
+// Répartit les dépenses Pennylane 2026 par catégorie dans les pôles budgétaires.
+// - Si une catégorie Pennylane correspond (par nom) à un pôle existant, son
+//   montant "Réel" est remplacé par le total réel Pennylane pour 2026.
+// - Si aucune catégorie ne correspond, un nouveau pôle est créé automatiquement
+//   (budget à 0, à ajuster manuellement), pour ne perdre aucune dépense.
+function mergeExpensesIntoBudget(data){
+  const matchedPoleIdx=new Set();
+  let colorI=0;
+
+  data.categories.forEach(cat=>{
+    const idx=poles.findIndex(p=>{
+      const a=normName(p.n),b=normName(cat.name);
+      return a===b||a.includes(b)||b.includes(a);
+    });
+    if(idx>=0){
+      poles[idx].reel=cat.amount;
+      matchedPoleIdx.add(idx);
+    } else {
+      poles.push({
+        id:Date.now()+Math.floor(Math.random()*1000),
+        n:cat.name,
+        budget:0,
+        reel:cat.amount,
+        c:AUTO_POLE_COLORS[colorI++%AUTO_POLE_COLORS.length]
+      });
+    }
+  });
+
+  // Les pôles existants non retrouvés dans Pennylane cette fois-ci gardent
+  // leur valeur "Réel" précédente (pas de remise à zéro automatique).
+
+  saveAll();
+  rBud();
+  toast(
+    data.invoice_count+' factures fournisseurs · '+ff(data.total,true)+
+    ' de dépenses réparties sur '+data.categories.length+' catégorie(s) depuis '+data.since
+  );
+  if(data.uncategorized_count>0){
+    console.warn(data.uncategorized_count+' factures fournisseurs sans catégorie Pennylane — regroupées sous "Non catégorisé".');
+  }
+}
 
 try{
   const s=JSON.parse(localStorage.getItem('strivia_v7')||'{}');
