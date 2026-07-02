@@ -1,0 +1,9 @@
+{
+  "name": "pennylane-strivia-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Synchronisation Pennylane -> Dashboard CFO Strivia",
+  "engines": {
+    "node": ">=18"
+  }
+}
