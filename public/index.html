@@ -208,8 +208,13 @@ tfoot td.L{text-align:left;position:sticky;left:0;background:var(--s2);z-index:2
       <span id="pennylane-sync-icon">🔄</span>
       <span id="pennylane-sync-label">Sync Pennylane</span>
     </button>
+    <button class="save-btn" id="notion-sync-btn" onclick="syncNotion()" style="background:var(--s2);color:var(--t);border:1px solid var(--b);margin-top:6px">
+      <span id="notion-sync-icon">🔄</span>
+      <span id="notion-sync-label">Sync Notion</span>
+    </button>
     <div class="save-ts" id="sts">Jamais sauvegardé</div>
     <div class="save-ts" id="psts" style="color:var(--t3)"></div>
+    <div class="save-ts" id="ntsts" style="color:var(--t3)"></div>
   </div>
 </aside>
 
@@ -889,6 +894,100 @@ function mergeIntoDashboard(pennylaneData){
   } else {
     toast(updatedMonths+' mois de CA mis à jour depuis Pennylane');
   }
+}
+
+// ===== SYNCHRONISATION NOTION (pipeline commercial) =====
+// Statuts Notion "Statut Livraison" qui correspondent à la plage prospect demandée
+const NOTION_PROSPECT_STATUSES=['À relancer','Validation brief','Retour brief','Échantillon fait','À signer'];
+async function syncNotion(){
+  const btn=document.getElementById('notion-sync-btn');
+  const icon=document.getElementById('notion-sync-icon');
+  const label=document.getElementById('notion-sync-label');
+  btn.disabled=true;icon.textContent='⏳';label.textContent='Synchronisation...';
+  try{
+    const res=await fetch('/api/notion-sync');
+    if(!res.ok){
+      const errBody=await res.json().catch(()=>({}));
+      throw new Error(errBody.error||('Erreur API '+res.status));
+    }
+    const data=await res.json();
+    mergeNotionIntoDashboard(data);
+    icon.textContent='✅';label.textContent=data.deal_count+' deals';
+    const ts=new Date(data.synced_at).toLocaleString('fr-FR',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+    document.getElementById('ntsts').textContent='Notion : '+ts;
+  }catch(err){
+    console.error('Erreur de synchronisation Notion :',err);
+    icon.textContent='⚠️';label.textContent='Erreur de synchro';
+    toast('Erreur de synchronisation Notion');
+  }finally{
+    btn.disabled=false;
+    setTimeout(()=>{icon.textContent='🔄';label.textContent='Sync Notion';},4000);
+  }
+}
+// Injecte les deals Notion dans le dashboard :
+// - statuts "À relancer" -> "À signer" : ajoutés/mis à jour comme prospects
+// - statut "BDD Livrée" : basculé automatiquement en client actif
+//   (créé directement en actif si le nom n'existe pas encore côté dashboard)
+function mergeNotionIntoDashboard(notionData){
+  const monthStr='2026-'+(VM+1).toString().padStart(2,'0');
+  let prospectsAdded=0,prospectsUpdated=0,clientsActivated=0,clientsCreated=0;
+
+  (notionData.prospects||[]).forEach(deal=>{
+    const existing=clients.find(c=>normName(c.n)===normName(deal.name));
+    if(existing){
+      // Ne pas rétrograder un client déjà actif ; on met juste à jour les notes/next step
+      if(existing.s==='prospect'){
+        existing.notes=deal.next_step||existing.notes;
+        prospectsUpdated++;
+      }
+    } else {
+      clients.push({
+        id:Date.now()+Math.floor(Math.random()*1000),
+        n:deal.name,
+        p:Array(12).fill(0),
+        costs:Array(12).fill(0),
+        s:'prospect',
+        cac:0,
+        date:monthStr,
+        churnDate:'',
+        notes:deal.next_step||('Notion — '+deal.status)
+      });
+      prospectsAdded++;
+    }
+  });
+
+  (notionData.new_clients||[]).forEach(deal=>{
+    const existing=clients.find(c=>normName(c.n)===normName(deal.name));
+    if(existing){
+      if(existing.s!=='actif'){
+        existing.s='actif';
+        existing.date=existing.date||monthStr;
+        clientsActivated++;
+      }
+    } else {
+      clients.push({
+        id:Date.now()+Math.floor(Math.random()*1000),
+        n:deal.name,
+        p:Array(12).fill(0),
+        costs:Array(12).fill(0),
+        s:'actif',
+        cac:0,
+        date:monthStr,
+        churnDate:'',
+        notes:deal.next_step||'Passé automatiquement en client (BDD Livrée — Notion)'
+      });
+      clientsCreated++;
+    }
+  });
+
+  saveAll();
+  const cur=document.querySelector('.panel.on')?.id?.replace('panel-','');
+  ({overview:rOv,pl:rPL,facturation:rFact,clients:rCl,budget:rBud,settings:rSet})[cur]?.();
+
+  toast(
+    prospectsAdded+' prospect(s) ajouté(s) · '+prospectsUpdated+' mis à jour · '+
+    clientsActivated+' client(s) activé(s) · '+clientsCreated+' client(s) créé(s) depuis Notion'
+  );
 }
 
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='s'){e.preventDefault();saveAll();}});
