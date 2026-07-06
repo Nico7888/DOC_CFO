@@ -165,6 +165,13 @@ tfoot td.L{text-align:left;position:sticky;left:0;background:var(--s2);z-index:2
       <div class="field"><label>Date d'entrée</label><input type="month" id="m-date" value="2026-01"></div>
       <div class="field" id="f-cac"><label>CAC (€ HT)</label><input type="number" id="m-cac" placeholder="0" min="0"></div>
       <div class="field" id="f-churn"><label>Date de churn</label><input type="month" id="m-churn"></div>
+      <div class="field" id="f-chiffrage"><label>CA prévisionnel (chiffrage, € HT)</label><input type="number" id="m-chiffrage" placeholder="0" min="0"></div>
+      <div class="field" id="f-stage"><label>Étape pipeline</label>
+        <select id="m-stage">
+          <option value="process_vente">Process de vente</option>
+          <option value="a_signer">À signer</option>
+        </select>
+      </div>
       <div class="field" style="grid-column:1/-1"><label>Notes</label><textarea id="m-notes" rows="2" placeholder="Contexte, secteur..."></textarea></div>
     </div>
     <div id="pay-section">
@@ -308,6 +315,52 @@ const cMarginPct=c=>cArr(c)>0?Math.round(cMargin(c)/cArr(c)*100):null;
 const act=c=>c.s==='actif';
 const sum=a=>a.reduce((s,v)=>s+v,0);
 
+// Nombre de jours entre l'entrée du deal dans le pipe (notionCreatedISO si
+// disponible, sinon le mois d'entrée c.date) et sa conversion en client
+// (c.convertedDate). Retourne null tant que le deal n'est pas signé.
+function cycleDaysFor(c){
+  if(!c.convertedDate)return null;
+  const start=c.notionCreatedISO?new Date(c.notionCreatedISO):(c.date?new Date(c.date+'-01'):null);
+  if(!start)return null;
+  const d=Math.round((new Date(c.convertedDate)-start)/86400000);
+  return isFinite(d)&&d>=0?d:null;
+}
+// Jours passés dans le pipe depuis l'entrée, pour un deal encore ouvert (non converti)
+function daysInPipeFor(c){
+  const start=c.notionCreatedISO?new Date(c.notionCreatedISO):(c.date?new Date(c.date+'-01'):null);
+  if(!start)return null;
+  const d=Math.round((new Date()-start)/86400000);
+  return isFinite(d)&&d>=0?d:null;
+}
+// Source unique de vérité pour toutes les stats pipeline (Synthèse + Clients & Prospects) :
+// recalculée à chaque appel à partir de `clients`, donc toujours à jour dès qu'un
+// deal change de statut (conversion manuelle ou sync Notion).
+function pipelineStats(){
+  const actif=clients.filter(c=>act(c));
+  const pros=clients.filter(c=>c.s==='prospect');
+  const churned=clients.filter(c=>c.s==='perdu');
+  const stageOf=c=>c.stage==='a_signer'?'a_signer':'process_vente';
+  const aSigner=pros.filter(c=>stageOf(c)==='a_signer');
+  const processVente=pros.filter(c=>stageOf(c)!=='a_signer');
+  const pipelineValo=aSigner.reduce((s,c)=>s+(c.chiffrage||0),0);
+  const totalPipeline=actif.length+pros.length+churned.length;
+  const closingRate=totalPipeline>0?Math.round(actif.length/totalPipeline*100):0;
+  const churnRate=churned.length>0?Math.round(churned.length/(actif.length+churned.length)*100):0;
+  const cycleDeals=clients.filter(c=>cycleDaysFor(c)!==null);
+  const cycleDaysList=cycleDeals.map(c=>cycleDaysFor(c));
+  const avgCycle=cycleDaysList.length?Math.round(sum(cycleDaysList)/cycleDaysList.length):null;
+  // Répartition des deals "process de vente" par statut Notion exact (à relancer,
+  // validation brief, retour brief, échantillon fait), pour une vue funnel détaillée.
+  const statusOrder=['À relancer','Validation brief','Retour brief','Échantillon fait'];
+  const statusBreakdown=statusOrder.map(st=>({
+    label:st,
+    count:processVente.filter(c=>c.notionStatus===st).length
+  }));
+  const manualCount=processVente.filter(c=>!c.notionStatus||!statusOrder.includes(c.notionStatus)).length;
+  if(manualCount>0)statusBreakdown.push({label:'Ajout manuel / autre',count:manualCount});
+  return{actif,pros,churned,aSigner,processVente,pipelineValo,totalPipeline,closingRate,churnRate,cycleDeals,cycleDaysList,avgCycle,statusBreakdown};
+}
+
 function ff(v,z){
   if((v===0||v==null)&&!z)return'—';
   const n=Math.round(v||0),a=Math.abs(n),s=n<0?'-':'';
@@ -349,6 +402,7 @@ function rOv(){
   const pay=actif.filter(c=>c.p[VM]>0);
   const or=clients.find(c=>c.n==='Orange');
   const orS=ca>0?Math.round((or?.p[VM]||0)/ca*100):0;
+  const ps=pipelineStats();
 
   document.getElementById('ov').innerHTML=`
     ${mTabs('rOv()')}
@@ -368,9 +422,31 @@ function rOv(){
       <div class="cc"><div class="ct">Top 10 clients — CA cumulé 2026</div><div class="cs">Classement par chiffre d'affaires</div><div class="cw" style="height:200px"><canvas id="ch3"></canvas></div></div>
       <div class="cc"><div class="ct">Clients — ${MN[VM]}</div><div class="cs">${pay.length} clients payants · ${actif.length} actifs total</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
-          <div class="kpi" style="border-radius:var(--r)"><div class="kl">Clients actifs</div><div class="kv" style="font-size:26px">${actif.length}</div><div class="ks">${clients.filter(c=>c.s==='prospect').length} prospects</div></div>
+          <div class="kpi" style="border-radius:var(--r)"><div class="kl">Clients actifs</div><div class="kv" style="font-size:26px">${actif.length}</div><div class="ks">${ps.pros.length} prospects</div></div>
           <div class="kpi ${orS>50?'r':''}" style="border-radius:var(--r)"><div class="kl">Conc. Orange</div><div class="kv ${orS>50?'neg':''}" style="font-size:26px">${ca>0?orS+'%':'—'}</div><div class="ks">${orS>50?'⚠ Risque':'du CA mois'}</div></div>
           <div class="kpi" style="grid-column:1/-1;border-radius:var(--r)"><div class="kl">Panier moyen</div><div class="kv" style="font-size:20px">${pay.length?ff(Math.round(ca/pay.length)):'—'}</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="font-size:13px;font-weight:600;margin:20px 0 10px">Pipeline commercial — vue globale</div>
+    <div class="kpis">
+      <div class="kpi ${ps.pipelineValo>0?'b':''}"><div class="kl">Pipe "À signer"</div><div class="kv">${ps.pipelineValo>0?ffF(ps.pipelineValo):'—'}</div><div class="ks">${ps.aSigner.length} deal${ps.aSigner.length>1?'s':''} chiffré${ps.aSigner.length>1?'s':''}</div></div>
+      <div class="kpi p"><div class="kl">Process de vente</div><div class="kv" style="color:var(--purple)">${ps.processVente.length}</div><div class="ks">deals en cours</div></div>
+      <div class="kpi g"><div class="kl">Taux de closing</div><div class="kv pos">${ps.closingRate}%</div><div class="ks">${ps.actif.length} closés / ${ps.totalPipeline} total</div></div>
+      <div class="kpi ${ps.churnRate>settings.churnAlert?'r':''}"><div class="kl">Taux de churn</div><div class="kv ${ps.churnRate>settings.churnAlert?'neg':''}">${ps.churnRate}%</div><div class="ks">${ps.churned.length} client${ps.churned.length>1?'s':''} perdu${ps.churned.length>1?'s':''}</div></div>
+      <div class="kpi"><div class="kl">Cycle de vente moyen</div><div class="kv">${ps.avgCycle!==null?ps.avgCycle+' j':'—'}</div><div class="ks">${ps.cycleDaysList.length?'Sur '+ps.cycleDaysList.length+' deal(s) signé(s)':'Pas encore de données'}</div></div>
+      <div class="kpi"><div class="kl">Pipeline total</div><div class="kv">${ps.pros.length}</div><div class="ks">${ps.aSigner.length} à signer · ${ps.processVente.length} en process</div></div>
+    </div>
+    <div class="cr cr2">
+      <div class="cc"><div class="ct">Répartition du pipeline par étape</div><div class="cs">Nombre de deals — de l'entrée à la signature</div><div class="cw" style="height:200px"><canvas id="ch4"></canvas></div></div>
+      <div class="cc"><div class="ct">Deals "À signer" — les plus matures</div><div class="cs">Triés par chiffrage décroissant</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;max-height:200px;overflow-y:auto">
+          ${[...ps.aSigner].sort((a,b)=>(b.chiffrage||0)-(a.chiffrage||0)).slice(0,8).map(c=>`
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--s2);border-radius:var(--r);font-size:12px">
+              <span style="font-weight:500">${c.n}</span>
+              <span style="font-family:'Geist Mono',monospace;color:var(--amber);font-weight:600">${c.chiffrage>0?ffF(c.chiffrage):'À chiffrer'}</span>
+            </div>`).join('')||'<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px">Aucun deal à signer pour le moment.</div>'}
         </div>
       </div>
     </div>`;
@@ -391,6 +467,16 @@ function rOv(){
   dc('ch3');
   const top=[...clients].filter(c=>act(c)&&cArr(c)>0).sort((a,b)=>cArr(b)-cArr(a)).slice(0,10);
   CHARTS.ch3=new Chart(document.getElementById('ch3'),{type:'bar',data:{labels:top.map(c=>c.n.length>14?c.n.slice(0,14)+'…':c.n),datasets:[{data:top.map(c=>cArr(c)),backgroundColor:'#EFF4FF',borderColor:'#2563EB',borderWidth:1.5,borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...tCfg,callbacks:{label:c=>` ${ffF(c.raw)}`}}},scales:{x:{grid:{color:'#F1F3F7'},ticks:{color:'#9CA3AF',font:{size:10},callback:v=>ff(v,true)},border:{display:false}},y:{grid:{display:false},ticks:{color:'#374151',font:{size:10,weight:'500'}},border:{display:false}}}}});
+
+  dc('ch4');
+  const funnelLabels=[...ps.statusBreakdown.map(s=>s.label),'À signer'];
+  const funnelData=[...ps.statusBreakdown.map(s=>s.count),ps.aSigner.length];
+  const funnelColors=[...ps.statusBreakdown.map(()=>'#93C5FD'),'#F59E0B'];
+  if(funnelData.some(v=>v>0)){
+    CHARTS.ch4=new Chart(document.getElementById('ch4'),{type:'bar',data:{labels:funnelLabels,datasets:[{data:funnelData,backgroundColor:funnelColors,borderColor:funnelColors.map(c=>c==='#F59E0B'?'#D97706':'#2563EB'),borderWidth:1.5,borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{...tCfg,callbacks:{label:c=>` ${c.raw} deal${c.raw>1?'s':''}`}}},scales:{x:{grid:{color:'#F1F3F7'},ticks:{color:'#9CA3AF',font:{size:10},stepSize:1},border:{display:false}},y:{grid:{display:false},ticks:{color:'#374151',font:{size:10,weight:'500'}},border:{display:false}}}}});
+  } else {
+    document.getElementById('ch4').parentElement.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:200px;color:var(--t3);font-size:12px;text-align:center">Aucun deal en cours dans le pipeline.<br>Synchronisez Notion ou ajoutez un prospect.</div>';
+  }
 }
 
 // P&L
@@ -525,23 +611,9 @@ function dFact(){clearTimeout(dFT2);dFT2=setTimeout(()=>{if(document.getElementB
 
 // CLIENTS & PROSPECTS
 function rCl(){
-  const actif=clients.filter(c=>act(c));
-  const pros=clients.filter(c=>c.s==='prospect');
-  const churned=clients.filter(c=>c.s==='perdu');
+  const ps=pipelineStats();
+  const{actif,pros,churned,aSigner,processVente,pipelineValo,totalPipeline,closingRate,churnRate,avgCycle,cycleDaysList}=ps;
   const cm_=settings.contractMonths;
-
-  // Classification du pipeline : deals matures "À signer" (chiffrage précis)
-  // vs. tout le reste regroupé en "Process de vente". Par défaut (prospects
-  // ajoutés manuellement, sans info Notion), on classe en process de vente.
-  const stageOf=c=>c.stage==='a_signer'?'a_signer':'process_vente';
-  const aSigner=pros.filter(c=>stageOf(c)==='a_signer');
-  const processVente=pros.filter(c=>stageOf(c)!=='a_signer');
-  const pipelineValo=aSigner.reduce((s,c)=>s+(c.chiffrage||0),0);
-
-  // Stats closing
-  const totalPipeline=actif.length+pros.length+churned.length;
-  const closingRate=totalPipeline>0?Math.round(actif.length/totalPipeline*100):0;
-  const churnRate=churned.length>0?Math.round(churned.length/(actif.length+churned.length)*100):0;
 
   // Nouveaux ce mois
   const monthStr='2026-'+(VM+1).toString().padStart(2,'0');
@@ -557,21 +629,12 @@ function rCl(){
   const avgLTV=avgMRR*cm_;
   const churnCost=churned.length*avgLTV;
 
-  // Cycle de vente : durée moyenne entre la date d'entrée dans le pipe (c.date,
-  // ou c.notionCreatedISO si dispo pour plus de précision) et la date de
-  // conversion en client (c.convertedDate, posée automatiquement à la conversion).
-  const cycleDeals=clients.filter(c=>c.convertedDate&&(c.notionCreatedISO||c.date));
-  const cycleDays=cycleDeals.map(c=>{
-    const start=c.notionCreatedISO?new Date(c.notionCreatedISO):new Date(c.date+'-01');
-    const end=new Date(c.convertedDate);
-    return Math.round((end-start)/86400000);
-  }).filter(d=>d>=0&&isFinite(d));
-  const avgCycle=cycleDays.length?Math.round(cycleDays.reduce((s,v)=>s+v,0)/cycleDays.length):null;
-
-  // Clients rows
+  // Clients rows — la projection LTV (trop instable d'un mois sur l'autre) a été
+  // retirée ; on affiche à la place le cycle de vente réel (entrée -> signature).
   const clRows=actif.sort((a,b)=>cArr(b)-cArr(a)).map(c=>{
-    const a=cArr(c),mo=c.p.filter(v=>v>0).length||1,moy=Math.round(a/mo),ltv=moy*cm_;
+    const a=cArr(c);
     const mg=cMarginPct(c);
+    const cyc=cycleDaysFor(c);
     const idx=clients.indexOf(c);
     return`<tr>
       <td class="L"><div style="display:flex;align-items:center;gap:8px">
@@ -579,21 +642,15 @@ function rCl(){
         <div><div style="font-weight:600">${c.n}</div><div style="font-size:10px;color:var(--t3)">${fmtDate(c.date)}</div></div>
       </div></td>
       <td style="font-family:'Geist Mono',monospace;color:var(--green);font-weight:600">${ffF(a)}</td>
-      <td style="font-family:'Geist Mono',monospace">${ff(moy)}</td>
-      <td style="font-family:'Geist Mono',monospace;color:var(--blue)">${ff(ltv)}</td>
       <td><input type="number" class="ci" style="width:75px;text-align:left" value="${c.cac||''}" placeholder="0" oninput="clients[${idx}].cac=parseFloat(this.value)||0"></td>
-      <td style="font-family:'Geist Mono',monospace;color:${c.cac>0?'var(--green)':'var(--t3)'}">${c.cac>0?(ltv/c.cac).toFixed(1)+'x':'—'}</td>
+      <td style="font-family:'Geist Mono',monospace;color:${cyc!==null?'var(--blue)':'var(--t3)'}">${cyc!==null?cyc+' j':'—'}</td>
       <td style="color:${mg!==null?(mg>=30?'var(--green)':mg>=0?'var(--amber)':'var(--red)'):'var(--t3)'};font-family:'Geist Mono',monospace;font-weight:500">${mg!==null?mg+'%':'—'}</td>
       <td><div style="display:flex;gap:5px"><button class="btn btn-g" style="padding:3px 8px;font-size:11px" onclick="editCl(${c.id})">&#x270E;</button><button class="btn btn-d" onclick="delCl(${c.id})">✕</button></div></td>
     </tr>`;
   }).join('');
 
   // Jours dans le pipe depuis l'entrée (pour deals encore ouverts)
-  const daysInPipe=c=>{
-    const start=c.notionCreatedISO?new Date(c.notionCreatedISO):new Date(c.date+'-01');
-    const d=Math.round((new Date()-start)/86400000);
-    return isFinite(d)&&d>=0?d:null;
-  };
+  const daysInPipe=daysInPipeFor;
 
   // Deals matures "À signer" — chiffrage précis, triés par valeur décroissante
   const aSignerCards=aSigner.sort((a,b)=>(b.chiffrage||0)-(a.chiffrage||0)).map(c=>{
@@ -626,7 +683,7 @@ function rCl(){
         <div style="width:28px;height:28px;border-radius:6px;background:var(--blue-bg);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--blue);flex-shrink:0">${c.n.charAt(0)}</div>
         <div>
           <div style="font-size:12px;font-weight:600;color:var(--t)">${c.n}</div>
-          <div style="font-size:10px;color:var(--t3)">Entré ${fmtDate(c.date)}${dip!==null?' · '+dip+' j dans le pipe':''}${c.notes?' · '+c.notes:''}</div>
+          <div style="font-size:10px;color:var(--t3)">Entré ${fmtDate(c.date)}${dip!==null?' · '+dip+' j dans le pipe':''}${c.notionStatus?' · '+c.notionStatus:''}${c.notes?' · '+c.notes:''}</div>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
@@ -648,7 +705,7 @@ function rCl(){
       <div class="kpi ${churnCost>0?'r':''}"><div class="kl">Coût du churn</div><div class="kv ${churnCost>0?'neg':''}">${churnCost>0?'- '+ff(churnCost):'—'}</div><div class="ks">${churned.length} × LTV moy. ${ff(avgLTV)}</div></div>
       <div class="kpi"><div class="kl">CA moyen / mois</div><div class="kv">${ff(avgMonthCA)}</div><div class="ks">Sur ${allMonthlyCA.length} mois avec data</div></div>
       <div class="kpi ${pipelineValo>0?'b':''}"><div class="kl">Valorisation pipe "À signer"</div><div class="kv">${pipelineValo>0?ffF(pipelineValo):'—'}</div><div class="ks">${aSigner.length} deal${aSigner.length>1?'s':''} chiffré${aSigner.length>1?'s':''}</div></div>
-      <div class="kpi"><div class="kl">Cycle de vente moyen</div><div class="kv">${avgCycle!==null?avgCycle+' j':'—'}</div><div class="ks">${cycleDays.length?'Sur '+cycleDays.length+' deal(s) signé(s)':'Pas encore de données'}</div></div>
+      <div class="kpi"><div class="kl">Cycle de vente moyen</div><div class="kv">${avgCycle!==null?avgCycle+' j':'—'}</div><div class="ks">${cycleDaysList.length?'Sur '+cycleDaysList.length+' deal(s) signé(s)':'Pas encore de données'}</div></div>
     </div>
 
     <div class="sec0" style="margin-bottom:14px">
@@ -656,8 +713,8 @@ function rCl(){
         <button class="btn btn-p" onclick="openModCl('actif')">+ Nouveau client</button>
       </div>
       <div style="overflow-x:auto"><table>
-        <thead><tr><th class="L" style="min-width:180px">Client</th><th>CA 2026</th><th>Moy/mois</th><th>LTV proj.</th><th>CAC (€)</th><th>Ratio LTV/CAC</th><th>Marge client</th><th></th></tr></thead>
-        <tbody>${clRows||'<tr><td class="L" colspan="8" style="text-align:center;padding:20px;color:var(--t3)">Aucun client actif</td></tr>'}</tbody>
+        <thead><tr><th class="L" style="min-width:180px">Client</th><th>CA 2026</th><th>CAC (€)</th><th>Cycle de vente</th><th>Marge client</th><th></th></tr></thead>
+        <tbody>${clRows||'<tr><td class="L" colspan="6" style="text-align:center;padding:20px;color:var(--t3)">Aucun client actif</td></tr>'}</tbody>
       </table></div>
     </div>
 
@@ -731,6 +788,8 @@ function openModCl(defaultStatus){
   document.getElementById('m-date').value='2026-0'+(VM+1>9?VM+1:'0'+(VM+1)).slice(-2);
   document.getElementById('m-churn').value='';
   document.getElementById('m-cac').value='';
+  document.getElementById('m-chiffrage').value='';
+  document.getElementById('m-stage').value='process_vente';
   document.getElementById('m-notes').value='';
   const mpay=document.getElementById('mpay');
   const mco=document.getElementById('mcosts');
@@ -749,6 +808,8 @@ function editCl(id){
   document.getElementById('m-date').value=c.date||'';
   document.getElementById('m-churn').value=c.churnDate||'';
   document.getElementById('m-cac').value=c.cac||'';
+  document.getElementById('m-chiffrage').value=c.chiffrage||'';
+  document.getElementById('m-stage').value=c.stage||'process_vente';
   document.getElementById('m-notes').value=c.notes||'';
   const mpay=document.getElementById('mpay');
   const mco=document.getElementById('mcosts');
@@ -762,18 +823,30 @@ function toggleClientFields(){
   const s=document.getElementById('m-status').value;
   const paySection=document.getElementById('pay-section');
   const fChurn=document.getElementById('f-churn');
+  const fChiffrage=document.getElementById('f-chiffrage');
+  const fStage=document.getElementById('f-stage');
   paySection.style.display=s==='prospect'?'none':'block';
   fChurn.style.display=s==='perdu'?'block':'none';
+  fChiffrage.style.display=s==='prospect'?'block':'none';
+  fStage.style.display=s==='prospect'?'block':'none';
 }
 
 function confirmCl(){
   const n=document.getElementById('m-name').value.trim();if(!n)return;
   const p=MN.map((_,i)=>parseFloat(document.getElementById('p'+i)?.value)||0);
   const co=MN.map((_,i)=>parseFloat(document.getElementById('c'+i)?.value)||0);
-  const obj={n,s:document.getElementById('m-status').value,date:document.getElementById('m-date').value,churnDate:document.getElementById('m-churn').value,cac:parseFloat(document.getElementById('m-cac').value)||0,notes:document.getElementById('m-notes').value,p,costs:co};
+  const newStatus=document.getElementById('m-status').value;
+  const obj={n,s:newStatus,date:document.getElementById('m-date').value,churnDate:document.getElementById('m-churn').value,cac:parseFloat(document.getElementById('m-cac').value)||0,chiffrage:parseFloat(document.getElementById('m-chiffrage').value)||0,stage:document.getElementById('m-stage').value,notes:document.getElementById('m-notes').value,p,costs:co};
   if(editingId){
     const idx=clients.findIndex(x=>x.id===editingId);
-    if(idx>=0)clients[idx]={...clients[idx],...obj};
+    if(idx>=0){
+      // Si on fait passer un prospect en client actif directement depuis ce modal,
+      // on pose la date de conversion pour alimenter le cycle de vente.
+      if(clients[idx].s==='prospect'&&newStatus==='actif'&&!clients[idx].convertedDate){
+        obj.convertedDate=new Date().toISOString().slice(0,10);
+      }
+      clients[idx]={...clients[idx],...obj};
+    }
   } else {
     clients.push({id:Date.now(),...obj});
   }
@@ -1010,6 +1083,7 @@ function mergeNotionIntoDashboard(notionData){
       if(existing.s==='prospect'){
         existing.stage=deal.stage;
         existing.chiffrage=deal.chiffrage||0;
+        existing.notionStatus=deal.status;
         existing.notionCreatedISO=existing.notionCreatedISO||deal.created_time||null;
         existing.notes=deal.next_step||existing.notes;
         prospectsUpdated++;
@@ -1025,6 +1099,7 @@ function mergeNotionIntoDashboard(notionData){
         date:entryMonth,
         notionCreatedISO:deal.created_time||null,
         stage:deal.stage,
+        notionStatus:deal.status,
         chiffrage:deal.chiffrage||0,
         churnDate:'',
         convertedDate:'',
