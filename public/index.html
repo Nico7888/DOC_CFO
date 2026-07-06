@@ -530,6 +530,14 @@ function rCl(){
   const churned=clients.filter(c=>c.s==='perdu');
   const cm_=settings.contractMonths;
 
+  // Classification du pipeline : deals matures "À signer" (chiffrage précis)
+  // vs. tout le reste regroupé en "Process de vente". Par défaut (prospects
+  // ajoutés manuellement, sans info Notion), on classe en process de vente.
+  const stageOf=c=>c.stage==='a_signer'?'a_signer':'process_vente';
+  const aSigner=pros.filter(c=>stageOf(c)==='a_signer');
+  const processVente=pros.filter(c=>stageOf(c)!=='a_signer');
+  const pipelineValo=aSigner.reduce((s,c)=>s+(c.chiffrage||0),0);
+
   // Stats closing
   const totalPipeline=actif.length+pros.length+churned.length;
   const closingRate=totalPipeline>0?Math.round(actif.length/totalPipeline*100):0;
@@ -548,6 +556,17 @@ function rCl(){
   const avgMRR=actif.length?Math.round(actif.reduce((s,c)=>s+cArr(c),0)/actif.length/12):0;
   const avgLTV=avgMRR*cm_;
   const churnCost=churned.length*avgLTV;
+
+  // Cycle de vente : durée moyenne entre la date d'entrée dans le pipe (c.date,
+  // ou c.notionCreatedISO si dispo pour plus de précision) et la date de
+  // conversion en client (c.convertedDate, posée automatiquement à la conversion).
+  const cycleDeals=clients.filter(c=>c.convertedDate&&(c.notionCreatedISO||c.date));
+  const cycleDays=cycleDeals.map(c=>{
+    const start=c.notionCreatedISO?new Date(c.notionCreatedISO):new Date(c.date+'-01');
+    const end=new Date(c.convertedDate);
+    return Math.round((end-start)/86400000);
+  }).filter(d=>d>=0&&isFinite(d));
+  const avgCycle=cycleDays.length?Math.round(cycleDays.reduce((s,v)=>s+v,0)/cycleDays.length):null;
 
   // Clients rows
   const clRows=actif.sort((a,b)=>cArr(b)-cArr(a)).map(c=>{
@@ -569,19 +588,49 @@ function rCl(){
     </tr>`;
   }).join('');
 
-  // Prospect rows
-  const prosCards=pros.map(c=>{
+  // Jours dans le pipe depuis l'entrée (pour deals encore ouverts)
+  const daysInPipe=c=>{
+    const start=c.notionCreatedISO?new Date(c.notionCreatedISO):new Date(c.date+'-01');
+    const d=Math.round((new Date()-start)/86400000);
+    return isFinite(d)&&d>=0?d:null;
+  };
+
+  // Deals matures "À signer" — chiffrage précis, triés par valeur décroissante
+  const aSignerCards=aSigner.sort((a,b)=>(b.chiffrage||0)-(a.chiffrage||0)).map(c=>{
     const idx=clients.indexOf(c);
-    return`<div class="prospect-row">
+    const dip=daysInPipe(c);
+    return`<div class="prospect-row" style="border-color:var(--amber);background:rgba(255,251,235,.5)">
       <div style="display:flex;align-items:center;gap:10px">
         <div style="width:28px;height:28px;border-radius:6px;background:var(--amber-bg);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--amber);flex-shrink:0">${c.n.charAt(0)}</div>
         <div>
           <div style="font-size:12px;font-weight:600;color:var(--t)">${c.n}</div>
-          <div style="font-size:10px;color:var(--t3)">Entré ${fmtDate(c.date)}${c.notes?' · '+c.notes:''}</div>
+          <div style="font-size:10px;color:var(--t3)">Entré ${fmtDate(c.date)}${dip!==null?' · '+dip+' j dans le pipe':''}${c.notes?' · '+c.notes:''}</div>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
-        <span class="pill pa">Prospect</span>
+        <span style="font-size:12px;font-weight:700;font-family:'Geist Mono',monospace;color:var(--amber)">${c.chiffrage>0?ffF(c.chiffrage):'À chiffrer'}</span>
+        <span class="pill" style="background:var(--amber-bg);color:var(--amber)">À signer</span>
+        <button class="btn btn-p" style="padding:4px 10px;font-size:11px" onclick="convertPros(${c.id})">&#x2713; Convertir</button>
+        <button class="btn btn-g" style="padding:3px 8px;font-size:11px" onclick="editCl(${c.id})">&#x270E;</button>
+        <button class="btn btn-d" onclick="delCl(${c.id})">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Process de vente — tous les autres statuts, regroupés
+  const processVenteCards=processVente.map(c=>{
+    const idx=clients.indexOf(c);
+    const dip=daysInPipe(c);
+    return`<div class="prospect-row">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:28px;height:28px;border-radius:6px;background:var(--blue-bg);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--blue);flex-shrink:0">${c.n.charAt(0)}</div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--t)">${c.n}</div>
+          <div style="font-size:10px;color:var(--t3)">Entré ${fmtDate(c.date)}${dip!==null?' · '+dip+' j dans le pipe':''}${c.notes?' · '+c.notes:''}</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="pill pp">Process de vente</span>
         <button class="btn btn-p" style="padding:4px 10px;font-size:11px" onclick="convertPros(${c.id})">&#x2713; Convertir</button>
         <button class="btn btn-g" style="padding:3px 8px;font-size:11px" onclick="editCl(${c.id})">&#x270E;</button>
         <button class="btn btn-d" onclick="delCl(${c.id})">✕</button>
@@ -598,6 +647,8 @@ function rCl(){
       <div class="kpi ${churnRate>settings.churnAlert?'r':''}"><div class="kl">Taux de churn</div><div class="kv ${churnRate>settings.churnAlert?'neg':''}">${churnRate}%</div><div class="ks">${churned.length} client${churned.length>1?'s':''} perdu${churned.length>1?'s':''}</div></div>
       <div class="kpi ${churnCost>0?'r':''}"><div class="kl">Coût du churn</div><div class="kv ${churnCost>0?'neg':''}">${churnCost>0?'- '+ff(churnCost):'—'}</div><div class="ks">${churned.length} × LTV moy. ${ff(avgLTV)}</div></div>
       <div class="kpi"><div class="kl">CA moyen / mois</div><div class="kv">${ff(avgMonthCA)}</div><div class="ks">Sur ${allMonthlyCA.length} mois avec data</div></div>
+      <div class="kpi ${pipelineValo>0?'b':''}"><div class="kl">Valorisation pipe "À signer"</div><div class="kv">${pipelineValo>0?ffF(pipelineValo):'—'}</div><div class="ks">${aSigner.length} deal${aSigner.length>1?'s':''} chiffré${aSigner.length>1?'s':''}</div></div>
+      <div class="kpi"><div class="kl">Cycle de vente moyen</div><div class="kv">${avgCycle!==null?avgCycle+' j':'—'}</div><div class="ks">${cycleDays.length?'Sur '+cycleDays.length+' deal(s) signé(s)':'Pas encore de données'}</div></div>
     </div>
 
     <div class="sec0" style="margin-bottom:14px">
@@ -610,13 +661,21 @@ function rCl(){
       </table></div>
     </div>
 
+    <div class="prospect-zone" style="margin-bottom:14px">
+      <div class="prospect-zone-title">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>
+        À signer — ${aSigner.length} deal${aSigner.length>1?'s':''} · ${pipelineValo>0?ffF(pipelineValo)+' de pipe chiffré':'chiffrage à compléter'}
+        <button class="btn btn-g" style="padding:4px 10px;font-size:11px;margin-left:auto" onclick="openModCl('prospect')">+ Nouveau prospect</button>
+      </div>
+      ${aSignerCards||'<div style="text-align:center;padding:16px;color:var(--t3);font-size:12px">Aucun deal à signer pour le moment.</div>'}
+    </div>
+
     <div class="prospect-zone">
       <div class="prospect-zone-title">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-        Prospects — ${pros.length} en cours
-        <button class="btn btn-g" style="padding:4px 10px;font-size:11px;margin-left:auto" onclick="openModCl('prospect')">+ Nouveau prospect</button>
+        Process de vente — ${processVente.length} en cours
       </div>
-      ${prosCards||'<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px">Aucun prospect — ajoutez-en un pour suivre votre pipeline.</div>'}
+      ${processVenteCards||'<div style="text-align:center;padding:20px;color:var(--t3);font-size:12px">Aucun deal en cours — ajoutez-en un pour suivre votre pipeline.</div>'}
     </div>
 
     ${churned.length>0?`<div style="margin-top:16px">
@@ -648,7 +707,7 @@ function rCl(){
 
 function convertPros(id){
   const c=clients.find(x=>x.id===id);
-  if(c){c.s='actif';saveAll();rCl();}
+  if(c){c.s='actif';c.convertedDate=c.convertedDate||new Date().toISOString().slice(0,10);saveAll();rCl();}
 }
 
 function reactivate(id){
@@ -924,19 +983,34 @@ async function syncNotion(){
     setTimeout(()=>{icon.textContent='🔄';label.textContent='Sync Notion';},4000);
   }
 }
+// Convertit une date ISO (created_time Notion) en mois 'YYYY-MM' pour rester
+// compatible avec le format de date déjà utilisé partout dans le dashboard.
+function monthFromISO(iso){
+  if(!iso)return null;
+  return iso.slice(0,7); // "2026-07-04T10:12:00.000Z" -> "2026-07"
+}
+
 // Injecte les deals Notion dans le dashboard :
-// - statuts "À relancer" -> "À signer" : ajoutés/mis à jour comme prospects
+// - statuts "À relancer" -> "Échantillon fait" : ajoutés/mis à jour comme prospects "process de vente"
+// - statut "À signer" : ajoutés/mis à jour comme prospects matures, avec chiffrage précis (ARR / 1er paiement)
 // - statut "BDD Livrée" : basculé automatiquement en client actif
 //   (créé directement en actif si le nom n'existe pas encore côté dashboard)
+// La date d'entrée (mois + ISO complet) est toujours celle de la création réelle
+// de la fiche dans Notion, pour permettre l'analyse du cycle de vente.
 function mergeNotionIntoDashboard(notionData){
-  const monthStr='2026-'+(VM+1).toString().padStart(2,'0');
+  const fallbackMonth='2026-'+(VM+1).toString().padStart(2,'0');
   let prospectsAdded=0,prospectsUpdated=0,clientsActivated=0,clientsCreated=0;
 
   (notionData.prospects||[]).forEach(deal=>{
+    const entryMonth=monthFromISO(deal.created_time)||fallbackMonth;
     const existing=clients.find(c=>normName(c.n)===normName(deal.name));
     if(existing){
-      // Ne pas rétrograder un client déjà actif ; on met juste à jour les notes/next step
+      // Ne pas rétrograder un client déjà actif ; on met juste à jour le
+      // stage, le chiffrage et les notes depuis Notion (source de vérité)
       if(existing.s==='prospect'){
+        existing.stage=deal.stage;
+        existing.chiffrage=deal.chiffrage||0;
+        existing.notionCreatedISO=existing.notionCreatedISO||deal.created_time||null;
         existing.notes=deal.next_step||existing.notes;
         prospectsUpdated++;
       }
@@ -948,8 +1022,12 @@ function mergeNotionIntoDashboard(notionData){
         costs:Array(12).fill(0),
         s:'prospect',
         cac:0,
-        date:monthStr,
+        date:entryMonth,
+        notionCreatedISO:deal.created_time||null,
+        stage:deal.stage,
+        chiffrage:deal.chiffrage||0,
         churnDate:'',
+        convertedDate:'',
         notes:deal.next_step||('Notion — '+deal.status)
       });
       prospectsAdded++;
@@ -957,11 +1035,14 @@ function mergeNotionIntoDashboard(notionData){
   });
 
   (notionData.new_clients||[]).forEach(deal=>{
+    const entryMonth=monthFromISO(deal.created_time)||fallbackMonth;
+    const today=new Date().toISOString().slice(0,10);
     const existing=clients.find(c=>normName(c.n)===normName(deal.name));
     if(existing){
       if(existing.s!=='actif'){
         existing.s='actif';
-        existing.date=existing.date||monthStr;
+        existing.date=existing.date||entryMonth;
+        existing.convertedDate=existing.convertedDate||today;
         clientsActivated++;
       }
     } else {
@@ -972,8 +1053,10 @@ function mergeNotionIntoDashboard(notionData){
         costs:Array(12).fill(0),
         s:'actif',
         cac:0,
-        date:monthStr,
+        date:entryMonth,
+        notionCreatedISO:deal.created_time||null,
         churnDate:'',
+        convertedDate:today,
         notes:deal.next_step||'Passé automatiquement en client (BDD Livrée — Notion)'
       });
       clientsCreated++;
