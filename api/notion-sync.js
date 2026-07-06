@@ -23,6 +23,10 @@ const PROSPECT_STATUSES = [
 // Statut qui déclenche le passage automatique en client actif
 const CLIENT_STATUS = "BDD Livrée";
 
+// Le seul statut considéré comme "mature" avec un chiffrage précis.
+// Tous les autres statuts de la plage prospect sont regroupés en "process de vente".
+const MATURE_STATUS = "À signer";
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -120,13 +124,23 @@ function extractDeal(page) {
   const firstPayment = props["1er paiement"]?.number ?? null;
   const nextStep = props["Next step"]?.rich_text?.map((t) => t.plain_text).join("") || "";
 
+  // Chiffrage précis uniquement pour les deals matures ("À signer") :
+  // priorité à l'ARR, sinon le montant du 1er paiement, sinon 0 (à chiffrer manuellement).
+  const isMature = status === MATURE_STATUS;
+  const chiffrage = isMature ? (arr ?? firstPayment ?? 0) : 0;
+
   return {
     name,
     status,
+    stage: isMature ? "a_signer" : "process_vente",
     arr,
     first_payment: firstPayment,
+    chiffrage,
     next_step: nextStep,
     notion_url: page.url,
+    // Date de création réelle de la fiche dans Notion : sert à mesurer le
+    // cycle de vente (entrée dans le pipe -> signature/BDD livrée).
+    created_time: page.created_time || null,
   };
 }
 
