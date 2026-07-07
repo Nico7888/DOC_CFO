@@ -490,7 +490,7 @@ function rPL(){
     g.keys.forEach(k=>{
       const d=CD.find(x=>x.k===k),rt=costs[k].reduce((s,v)=>s+v,0);
       rows+=`<tr><td class="L"><span style="display:inline-flex;align-items:center;gap:7px"><span style="width:8px;height:8px;border-radius:2px;background:${d.c};display:inline-block;flex-shrink:0"></span>${d.l}</span></td>
-        ${MN.map((_,i)=>`<td><input type="number" class="ci" value="${costs[k][i]||''}" placeholder="—" min="0" oninput="costs['${k}'][${i}]=parseFloat(this.value)||0;dPL()"></td>`).join('')}
+        ${MN.map((_,i)=>`<td><input type="number" class="ci" value="${costs[k][i]||''}" placeholder="—" min="0" oninput="costs['${k}'][${i}]=parseFloat(this.value)||0"></td>`).join('')}
         <td style="font-family:'Geist Mono',monospace;color:${rt>0?'var(--red)':'var(--t3)'}">${rt>0?ffF(rt):'—'}</td></tr>`;
     });
     const gt=MN.map((_,i)=>g.keys.reduce((s,k)=>s+(costs[k][i]||0),0));
@@ -514,8 +514,6 @@ function rPL(){
     ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,position:'top',align:'end',labels:{color:'#6B7280',font:{size:11},boxWidth:10,padding:14}},tooltip:{...tCfg,callbacks:{label:c=>` ${c.dataset.label}: ${ffF(c.raw,true)}`}}},scales:sCfg}});
   },30);
 }
-let dPLT=null;
-function dPL(){clearTimeout(dPLT);dPLT=setTimeout(rPL,380);}
 
 // FACTURATION — fiches par client
 function rFact(){
@@ -552,10 +550,10 @@ function rFact(){
         <div style="display:flex;align-items:center;gap:20px">
           <div style="text-align:right"><div style="font-size:10px;color:var(--t3)">CA 2026</div><div style="font-size:14px;font-weight:700;font-family:'Geist Mono',monospace;color:var(--t)">${ffF(a)}</div></div>
           <div style="text-align:right"><div style="font-size:10px;color:var(--t3)">Marge</div><div style="font-size:14px;font-weight:700;font-family:'Geist Mono',monospace;color:${mg>=0?'var(--green)':'var(--red)'}">${mgPct}%</div></div>
-          <div style="color:var(--t3);font-size:14px" id="chevron-${c.id}">&#x25BC;</div>
+          <div style="color:var(--t3);font-size:14px" id="chevron-${c.id}">${openCardIds.has(c.id)?'&#x25B2;':'&#x25BC;'}</div>
         </div>
       </div>
-      <div class="client-card-body" id="card-body-${c.id}">
+      <div class="client-card-body${openCardIds.has(c.id)?' open':''}" id="card-body-${c.id}">
         <div class="margin-line">
           <div class="ml-item"><div class="ml-label">CA total</div><div class="ml-val" style="color:var(--green)">${ffF(a)}</div></div>
           <div class="ml-item"><div class="ml-label">Coûts annexes</div><div class="ml-val" style="color:var(--red)">${cc2>0?ffF(cc2):'—'}</div></div>
@@ -571,9 +569,9 @@ function rFact(){
         <div style="overflow-x:auto;border:1px solid var(--b);border-radius:var(--r);padding:12px;margin-bottom:14px">
           <div style="display:grid;grid-template-columns:70px repeat(12,1fr);gap:4px;min-width:700px">
             <div style="font-size:10px;color:var(--t3);font-weight:600;padding-top:36px">CA (€)</div>
-            ${MN.map((m,i)=>`<div class="field" style="gap:2px"><label style="font-size:9px;text-align:center">${m}</label><input type="number" class="ci" style="width:100%;text-align:center;font-size:10px" value="${c.p[i]||''}" placeholder="—" min="0" oninput="clients[${idx}].p[${i}]=parseFloat(this.value)||0;dFact()"></div>`).join('')}
+            ${MN.map((m,i)=>`<div class="field" style="gap:2px"><label style="font-size:9px;text-align:center">${m}</label><input type="number" class="ci" style="width:100%;text-align:center;font-size:10px" value="${c.p[i]||''}" placeholder="—" min="0" oninput="clients[${idx}].p[${i}]=parseFloat(this.value)||0"></div>`).join('')}
             <div style="font-size:10px;color:var(--t3);font-weight:600;padding-top:4px">Coûts (€)</div>
-            ${MN.map((m,i)=>`<div><input type="number" class="ci" style="width:100%;text-align:center;font-size:10px;color:var(--red)" value="${(c.costs||[])[i]||''}" placeholder="—" min="0" oninput="if(!clients[${idx}].costs)clients[${idx}].costs=Array(12).fill(0);clients[${idx}].costs[${i}]=parseFloat(this.value)||0;dFact()"></div>`).join('')}
+            ${MN.map((m,i)=>`<div><input type="number" class="ci" style="width:100%;text-align:center;font-size:10px;color:var(--red)" value="${(c.costs||[])[i]||''}" placeholder="—" min="0" oninput="if(!clients[${idx}].costs)clients[${idx}].costs=Array(12).fill(0);clients[${idx}].costs[${i}]=parseFloat(this.value)||0"></div>`).join('')}
           </div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:4px;min-width:700px;overflow-x:auto">${payBars}</div>
@@ -599,15 +597,16 @@ function rFact(){
     ${cards||'<div style="text-align:center;padding:40px;color:var(--t3)">Aucun client actif — ajoutez-en un pour commencer.</div>'}`;
 }
 
+// Fiches clients ouvertes (Facturation) : mémorisées pour ne pas se refermer
+// quand on clique sur "Sauvegarder" (qui rafraîchit l'affichage).
+const openCardIds=new Set();
 function toggleCard(id){
   const body=document.getElementById('card-body-'+id);
   const chev=document.getElementById('chevron-'+id);
   const open=body.classList.toggle('open');
   if(chev)chev.innerHTML=open?'&#x25B2;':'&#x25BC;';
+  if(open)openCardIds.add(id);else openCardIds.delete(id);
 }
-
-let dFT2=null;
-function dFact(){clearTimeout(dFT2);dFT2=setTimeout(()=>{if(document.getElementById('panel-facturation').classList.contains('on'))rFact();},500);}
 
 // CLIENTS & PROSPECTS
 function rCl(){
@@ -764,7 +763,7 @@ function rCl(){
 
 function convertPros(id){
   const c=clients.find(x=>x.id===id);
-  if(c){c.s='actif';c.convertedDate=c.convertedDate||new Date().toISOString().slice(0,10);saveAll();rCl();}
+  if(c){c.s='actif';c.convertedDate=c.convertedDate||new Date().toISOString().slice(0,10);saveAll();}
 }
 
 function reactivate(id){
@@ -773,7 +772,7 @@ function reactivate(id){
     c.s='actif';
     c.churnDate='';
     c.date='2026-'+(VM+1).toString().padStart(2,'0');
-    saveAll();rCl();
+    saveAll();
     toast('Client réactivé — bienvenue de retour !');
   }
 }
@@ -872,8 +871,8 @@ function rBud(){
   const pRows=poles.map((p,i)=>{
     const al=tb?Math.round(p.budget/tb*100):0,ov=p.reel>p.budget;
     return`<tr><td class="L"><div style="display:flex;align-items:center;gap:9px"><div style="width:10px;height:10px;border-radius:3px;background:${p.c};flex-shrink:0"></div><input class="nin" value="${p.n}" oninput="poles[${i}].n=this.value"></div></td>
-      <td><input type="number" class="ci" value="${p.budget}" style="width:105px" oninput="poles[${i}].budget=parseFloat(this.value)||0;rBud()"></td>
-      <td><input type="number" class="ci" value="${p.reel}" style="width:105px;color:${ov?'var(--red)':''}" oninput="poles[${i}].reel=parseFloat(this.value)||0;rBud()"></td>
+      <td><input type="number" class="ci" value="${p.budget}" style="width:105px" oninput="poles[${i}].budget=parseFloat(this.value)||0"></td>
+      <td><input type="number" class="ci" value="${p.reel}" style="width:105px;color:${ov?'var(--red)':''}" oninput="poles[${i}].reel=parseFloat(this.value)||0"></td>
       <td><div style="width:90px"><div style="font-size:10px;font-family:'Geist Mono',monospace;color:var(--t3);margin-bottom:3px">${al}%</div><div class="bt" style="height:6px"><div class="bf" style="width:${Math.min(al,100)}%;background:${p.c}"></div></div></div></td>
       <td><span style="font-size:11px;color:${ov?'var(--red)':'var(--t3)'}">${ov?'⚠ +'+ffF(p.reel-p.budget):'✓ OK'}</span></td>
       <td><button class="btn btn-d" onclick="poles.splice(${i},1);rBud()">✕</button></td></tr>`;
@@ -937,6 +936,10 @@ function saveAll(){
     const t=new Date().toLocaleString('fr-FR',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
     document.getElementById('sts').textContent='Sauvegardé '+t;
     toast('Données sauvegardées');
+    // Sauvegarder est le SEUL moment où l'écran se rafraîchit : ça recalcule les
+    // totaux/graphiques du panneau actif, sans jamais bouger pendant la saisie.
+    const cur=document.querySelector('.panel.on')?.id?.replace('panel-','');
+    ({overview:rOv,pl:rPL,facturation:rFact,clients:rCl,budget:rBud,settings:rSet})[cur]?.();
   }catch(e){alert('Erreur de sauvegarde.');}
 }
 function toast(msg){
@@ -1017,8 +1020,6 @@ function mergeIntoDashboard(pennylaneData){
   });
 
   saveAll();
-  const cur=document.querySelector('.panel.on')?.id?.replace('panel-','');
-  ({overview:rOv,pl:rPL,facturation:rFact,clients:rCl,budget:rBud,settings:rSet})[cur]?.();
 
   if(unmatched.length){
     console.warn('Clients Pennylane non reconnus dans le dashboard (à créer/rapprocher manuellement) :',unmatched);
@@ -1139,8 +1140,6 @@ function mergeNotionIntoDashboard(notionData){
   });
 
   saveAll();
-  const cur=document.querySelector('.panel.on')?.id?.replace('panel-','');
-  ({overview:rOv,pl:rPL,facturation:rFact,clients:rCl,budget:rBud,settings:rSet})[cur]?.();
 
   toast(
     prospectsAdded+' prospect(s) ajouté(s) · '+prospectsUpdated+' mis à jour · '+
@@ -1148,9 +1147,11 @@ function mergeNotionIntoDashboard(notionData){
   );
 }
 
+// Sauvegarde uniquement sur action explicite : clic sur le bouton "Sauvegarder"
+// ou raccourci Cmd/Ctrl+S. Plus aucune sauvegarde automatique en arrière-plan
+// pendant la saisie, pour que l'écran ne bouge jamais tant que tu n'as pas
+// terminé et cliqué sur Sauvegarder.
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='s'){e.preventDefault();saveAll();}});
-let asT=null;
-document.addEventListener('input',()=>{clearTimeout(asT);asT=setTimeout(saveAll,4000);});
 
 // ===== SYNCHRONISATION DÉPENSES PENNYLANE (Budgets) =====
 
@@ -1212,7 +1213,6 @@ function mergeExpensesIntoBudget(data){
   // leur valeur "Réel" précédente (pas de remise à zéro automatique).
 
   saveAll();
-  rBud();
   toast(
     data.invoice_count+' factures fournisseurs · '+ff(data.total,true)+
     ' de dépenses réparties sur '+data.categories.length+' catégorie(s) depuis '+data.since
