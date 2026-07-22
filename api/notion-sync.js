@@ -11,8 +11,9 @@
 const NOTION_VERSION = "2022-06-28";
 const NOTION_BASE_URL = "https://api.notion.com/v1";
 
-// Statuts "Statut Livraison" qui définissent la plage prospect (à relancer -> à signer)
+// Statuts "Statut Livraison" qui définissent la plage prospect (R2 à qualif -> à signer)
 const PROSPECT_STATUSES = [
+  "R2 à qualif",
   "À relancer",
   "Validation brief",
   "Retour brief",
@@ -22,6 +23,9 @@ const PROSPECT_STATUSES = [
 
 // Statut qui déclenche le passage automatique en client actif
 const CLIENT_STATUS = "BDD Livrée";
+
+// Statuts exclus de la vue "Next steps" (deals morts / non pertinents / déjà clos)
+const NEXT_STEP_EXCLUDED_STATUSES = ["Pas pertinent", "Deal terminé"];
 
 // Le seul statut considéré comme "mature" avec un chiffrage précis.
 // Tous les autres statuts de la plage prospect sont regroupés en "process de vente".
@@ -49,12 +53,14 @@ export default async function handler(req, res) {
   try {
     const pages = await fetchAllDeals(token, databaseId);
     const { prospects, newClients } = splitByStatus(pages);
+    const nextSteps = extractNextSteps(pages);
 
     return res.status(200).json({
       synced_at: new Date().toISOString(),
       deal_count: pages.length,
       prospects,
       new_clients: newClients,
+      next_steps: nextSteps,
     });
   } catch (err) {
     console.error("Notion sync error:", err);
@@ -72,13 +78,6 @@ async function fetchAllDeals(token, databaseId) {
   let page = 0;
   const MAX_PAGES = 50; // garde-fou anti-boucle-infinie
 
-  const statusFilter = {
-    or: [...PROSPECT_STATUSES, CLIENT_STATUS].map((status) => ({
-      property: "Statut Livraison",
-      status: { equals: status },
-    })),
-  };
-
   do {
     const response = await fetch(
       `${NOTION_BASE_URL}/databases/${databaseId}/query`,
@@ -90,7 +89,6 @@ async function fetchAllDeals(token, databaseId) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          filter: statusFilter,
           page_size: 100,
           ...(cursor ? { start_cursor: cursor } : {}),
         }),
@@ -162,4 +160,28 @@ function splitByStatus(pages) {
   });
 
   return { prospects, newClients };
+}
+
+// Construit la liste brute des "Next step" sur tout le pipeline (hors deals
+// morts / non pertinents), pour la vue "Next steps" du dashboard : le
+// classement par typologie et par temporalité se fait côté front.
+function extractNextSteps(pages) {
+  const nextSteps = [];
+
+  pages.forEach((page) => {
+    const deal = extractDeal(page);
+    if (!deal.status) return;
+    if (NEXT_STEP_EXCLUDED_STATUSES.includes(deal.status)) return;
+    const text = (deal.next_step || "").trim();
+    if (!text) return;
+
+    nextSteps.push({
+      name: deal.name,
+      status: deal.status,
+      next_step: text,
+      notion_url: deal.notion_url,
+    });
+  });
+
+  return nextSteps;
 }
